@@ -22,7 +22,7 @@ import stbt
 
 def press_and_wait(
         key, region=stbt.Region.ALL, mask=None, timeout_secs=10, stable_secs=1,
-        _dut=None):
+        diff=None, _dut=None):
 
     """Press a key, then wait for the screen to change, then wait for it to stop
     changing.
@@ -51,11 +51,24 @@ def press_and_wait(
         (within the specified region or mask) for this long, for the transition
         to be considered "complete".
 
+    :param diff: A function that decides whether there are any differences
+        between two consecutive frames. It should return true if any
+        differences are detected, or false if the frames are the same. It
+        takes the following arguments:
+
+        * The previous frame (type `stbt.Frame`).
+        * The current frame (type `stbt.Frame`).
+        * A keyword parameter named ``region`` (type `stbt.Region`).
+        * A keyword parameter named ``mask`` (`numpy.ndarray` or ``None``).
+
+        This defaults to a strict comparison: all pixels must be identical in
+        both frames for them to be considered equal.
+
     :returns: A `TransitionResult`, which will evaluate to true if the
         transition completed, false otherwise.
     """
 
-    t = _Transition(region, mask, timeout_secs, stable_secs, _dut)
+    t = _Transition(region, mask, timeout_secs, stable_secs, diff, _dut)
     result = t.press_and_wait(key)
     stbt.debug(str(result))
     return result
@@ -63,7 +76,7 @@ def press_and_wait(
 
 def wait_for_transition_to_end(
         initial_frame=None, region=stbt.Region.ALL, mask=None, timeout_secs=10,
-        stable_secs=1, _dut=None):
+        stable_secs=1, diff=None, _dut=None):
 
     """Wait for the screen to stop changing.
 
@@ -86,11 +99,12 @@ def wait_for_transition_to_end(
     :param mask: See `press_and_wait`.
     :param timeout_secs: See `press_and_wait`.
     :param stable_secs: See `press_and_wait`.
+    :param diff: See `press_and_wait`.
 
     :returns: A `TransitionResult`, which will evaluate to true if the
         transition completed, false otherwise.
     """
-    t = _Transition(region, mask, timeout_secs, stable_secs, _dut)
+    t = _Transition(region, mask, timeout_secs, stable_secs, diff, _dut)
     result = t.wait_for_transition_to_end(initial_frame)
     stbt.debug(str(result))
     return result
@@ -98,7 +112,7 @@ def wait_for_transition_to_end(
 
 class _Transition(object):
     def __init__(self, region=stbt.Region.ALL, mask=None, timeout_secs=10,
-                 stable_secs=1, dut=None):
+                 stable_secs=1, diff=None, dut=None):
 
         if dut is None:
             self.dut = stbt
@@ -118,9 +132,12 @@ class _Transition(object):
 
         self.timeout_secs = timeout_secs
         self.stable_secs = stable_secs
+        if diff is None:
+            self.diff = strict_diff
+        else:
+            self.diff = diff
 
         self.frames = self.dut.frames()
-        self.diff = strict_diff
         self.expiry_time = None
 
     def press_and_wait(self, key):
@@ -135,7 +152,8 @@ class _Transition(object):
             if f.time < press_time:
                 # Discard frame to work around latency in video-capture pipeline
                 continue
-            if self.diff(original_frame, f, self.region, self.mask_image):
+            if self.diff(original_frame, f, region=self.region,
+                         mask=self.mask_image):
                 _debug("Animation started", f)
                 animation_start_time = f.time
                 break
@@ -163,7 +181,7 @@ class _Transition(object):
         while True:
             prev = f
             f, _ = next(self.frames)
-            if self.diff(prev, f, self.region, self.mask_image):
+            if self.diff(prev, f, region=self.region, mask=self.mask_image):
                 _debug("Animation in progress", f)
                 first_stable_frame = f
             else:
@@ -187,7 +205,7 @@ def _debug(s, f, *args):
     stbt.debug(("transition: %.3f: " + s) % ((f.time,) + args))
 
 
-def strict_diff(f1, f2, region, mask_image):
+def strict_diff(f1, f2, region, mask):
     if region is not None:
         full_frame = stbt.Region(0, 0, f1.shape[1], f1.shape[0])
         region = stbt.Region.intersect(full_frame, region)
@@ -195,8 +213,8 @@ def strict_diff(f1, f2, region, mask_image):
         f2 = f2[region.y:region.bottom, region.x:region.right]
 
     absdiff = cv2.absdiff(f1, f2)
-    if mask_image is not None:
-        absdiff = cv2.bitwise_and(absdiff, mask_image, absdiff)
+    if mask is not None:
+        absdiff = cv2.bitwise_and(absdiff, mask, absdiff)
 
     return absdiff.any()
 
